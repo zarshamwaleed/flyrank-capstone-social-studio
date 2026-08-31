@@ -1,22 +1,19 @@
-﻿version: '3.8'
-
-services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: social_media_studio_db
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: social_media_studio
+﻿services:
+  app:
+    build: .
+    container_name: social_media_studio_app
     ports:
-      - "5432:5432"
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./data/social_media_studio.db
+      - DISCORD_WEBHOOK_URL=
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./data:/app/data
+      - ./app:/app/app
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  postgres_data:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
