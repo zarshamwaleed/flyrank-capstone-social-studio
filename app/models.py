@@ -1,4 +1,4 @@
-﻿from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+﻿from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Index
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -38,10 +38,17 @@ class PublishAttempt(Base):
     id = Column(Integer, primary_key=True, index=True)
     variant_id = Column(Integer, ForeignKey("variants.id"), nullable=False)
     platform = Column(String(50), nullable=False)
-    status = Column(String(50), nullable=False)
+    status = Column(String(50), nullable=False)  # success, failed, retry, duplicate_blocked
     message = Column(Text, nullable=True)
     external_id = Column(String(255), nullable=True)
     attempted_at = Column(DateTime(timezone=True), server_default=func.now())
     idempotency_key = Column(String(255), nullable=False, unique=True)
+    retry_count = Column(Integer, default=0)
+    is_duplicate = Column(Boolean, default=False)
     
     variant = relationship("Variant", back_populates="publish_attempts")
+    
+    __table_args__ = (
+        Index('idx_publish_attempts_idempotency_key', 'idempotency_key'),
+        Index('idx_publish_attempts_variant_id', 'variant_id'),
+    )
