@@ -1,12 +1,17 @@
 ﻿from sqlalchemy.orm import Session
-from app.models import Post
-from app.schemas import PostCreate
+from app.models import Post, Variant
+from app.generators import PlatformGenerator
+from typing import List, Dict, Optional
 import requests
-import httpx
-from datetime import datetime
 import re
+from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 class PostService:
+    """Service for handling blog posts"""
+    
     @staticmethod
     def extract_title_from_html(html_content):
         """Extract title from HTML content"""
@@ -36,7 +41,6 @@ class PostService:
             })
             response.raise_for_status()
             
-            # Extract title and content
             html_content = response.text
             title = PostService.extract_title_from_html(html_content)
             content = PostService.extract_text_from_html(html_content)
@@ -55,7 +59,7 @@ class PostService:
             raise ValueError(f"Error processing URL: {str(e)}")
     
     @staticmethod
-    def create_post(db: Session, post_data: PostCreate):
+    def create_post(db: Session, post_data):
         """Create a new post in the database"""
         # Determine source type
         source_type = "url" if post_data.source_url else "text"
@@ -86,3 +90,103 @@ class PostService:
         db.refresh(db_post)
         
         return db_post, source_type
+
+
+class VariantService:
+    """Service for handling variants"""
+    
+    @staticmethod
+    def generate_variants_for_post(db: Session, post_id: int, platforms: List[str] = None) -> List[Variant]:
+        """Generate variants for a post on specified platforms"""
+        
+        # Get the post
+        post = db.query(Post).filter(Post.id == post_id).first()
+        if not post:
+            raise ValueError(f"Post with id {post_id} not found")
+        
+        # Default platforms if none specified
+        if not platforms:
+            platforms = ["twitter", "linkedin", "discord"]
+        
+        generated_variants = []
+        
+        for platform in platforms:
+            # Check if variant already exists for this platform
+            existing = db.query(Variant).filter(
+                Variant.post_id == post_id,
+                Variant.platform == platform
+            ).first()
+            
+            if existing:
+                logger.info(f"Variant for platform {platform} already exists for post {post_id}")
+                generated_variants.append(existing)
+                continue
+            
+            # Generate the variant
+            variant_data = PlatformGenerator.generate_variant(platform, post.title or "Untitled", post.content)
+            
+            if not variant_data:
+                logger.warning(f"Could not generate variant for platform {platform}")
+                continue
+            
+            # Create variant in database
+            db_variant = Variant(
+                post_id=post_id,
+                platform=platform,
+                content=variant_data.get("content", ""),
+                status="draft",
+                hashtags=variant_data.get("hashtags", "")
+            )
+            
+            db.add(db_variant)
+            db.commit()
+            db.refresh(db_variant)
+            
+            generated_variants.append(db_variant)
+            logger.info(f"Generated variant for platform {platform} on post {post_id}")
+        
+        return generated_variants
+    
+    @staticmethod
+    def get_variants_for_post(db: Session, post_id: int) -> List[Variant]:
+        """Get all variants for a post"""
+        return db.query(Variant).filter(Variant.post_id == post_id).all()
+    
+    @staticmethod
+    def get_variant(db: Session, variant_id: int) -> Variant:
+        """Get a specific variant by ID"""
+        variant = db.query(Variant).filter(Variant.id == variant_id).first()
+        if not variant:
+            raise ValueError(f"Variant with id {variant_id} not found")
+        return variant
+    
+    @staticmethod
+    def update_variant_status(db: Session, variant_id: int, status: str) -> Variant:
+        """Update a variant's status"""
+        variant = VariantService.get_variant(db, variant_id)
+        variant.status = status
+        db.commit()
+        db.refresh(variant)
+        return variant
+    
+    @staticmethod
+    def update_variant_content(db: Session, variant_id: int, content: str) -> Variant:
+        """Update a variant's content"""
+        variant = VariantService.get_variant(db, variant_id)
+        variant.content = content
+        db.commit()
+        db.refresh(variant)
+        return variant
+    
+    @staticmethod
+    def delete_variant(db: Session, variant_id: int) -> bool:
+        """Delete a variant"""
+        variant = VariantService.get_variant(db, variant_id)
+        db.delete(variant)
+        db.commit()
+        return True
+    
+    @staticmethod
+    def get_platform_constraints() -> Dict:
+        """Get platform constraints"""
+        return PlatformGenerator.CONSTRAINTS

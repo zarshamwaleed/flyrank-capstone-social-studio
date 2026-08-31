@@ -1,12 +1,26 @@
-﻿from pydantic import BaseModel, HttpUrl, Field
-from typing import Optional
+﻿from pydantic import BaseModel, Field
+from typing import Optional, List
 from datetime import datetime
+from enum import Enum
 
+class PlatformType(str, Enum):
+    TWITTER = "twitter"
+    LINKEDIN = "linkedin"
+    DISCORD = "discord"
+    MOCK_X = "mock_x"
+    MOCK_LINKEDIN = "mock_linkedin"
+
+class VariantStatus(str, Enum):
+    DRAFT = "draft"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    PUBLISHED = "published"
+
+# Post schemas
 class PostCreate(BaseModel):
-    """Schema for creating a new post"""
     title: Optional[str] = Field(None, description="Post title")
     content: Optional[str] = Field(None, description="Post content in Markdown")
-    source_url: Optional[HttpUrl] = Field(None, description="URL of the original blog post")
+    source_url: Optional[str] = Field(None, description="URL of the original blog post")
     
     class Config:
         json_schema_extra = {
@@ -18,7 +32,6 @@ class PostCreate(BaseModel):
         }
 
 class PostResponse(BaseModel):
-    """Schema for post response"""
     id: int
     title: Optional[str]
     content: str
@@ -30,11 +43,54 @@ class PostResponse(BaseModel):
         from_attributes = True
 
 class PostIngestResponse(BaseModel):
-    """Schema for post ingestion response"""
     status: str
     message: str
     post: Optional[PostResponse]
-    source_type: str  # 'url' or 'text'
+    source_type: str
     
     class Config:
         from_attributes = True
+
+# Variant schemas
+class VariantCreate(BaseModel):
+    platform: PlatformType
+    post_id: int
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "platform": "twitter",
+                "post_id": 1
+            }
+        }
+
+class VariantResponse(BaseModel):
+    id: int
+    post_id: int
+    platform: str
+    content: str
+    status: str
+    hashtags: Optional[str]
+    scheduled_for: Optional[datetime]
+    published_at: Optional[datetime]
+    created_at: datetime
+    updated_at: Optional[datetime]
+    
+    class Config:
+        from_attributes = True
+
+class VariantGenerateResponse(BaseModel):
+    status: str
+    message: str
+    variants: List[VariantResponse]
+    platforms_generated: List[str]
+    
+    class Config:
+        from_attributes = True
+
+class ConstraintInfo(BaseModel):
+    platform: str
+    max_length: int
+    max_hashtags: int
+    tone: str
+    description: str
