@@ -1,5 +1,5 @@
 ﻿from app.publishers import SocialPublisher
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 from datetime import datetime
 import uuid
@@ -58,9 +58,26 @@ class MockXPublisher(SocialPublisher):
         import re
         return re.findall(r'#\w+', content)
     
-    def get_published_posts(self) -> list:
-        """Get all published posts (for testing)"""
+    def get_published_posts(self) -> List[Dict]:
+        """Get all published posts"""
         return self.published_posts
+    
+    def get_published_posts_count(self) -> int:
+        """Get count of published posts"""
+        return len(self.published_posts)
+    
+    def clear_history(self) -> int:
+        """Clear all published posts history"""
+        count = len(self.published_posts)
+        self.published_posts = []
+        logger.info(f"Cleared {count} posts from Mock X history")
+        return count
+    
+    def get_last_post(self) -> Optional[Dict]:
+        """Get the most recent published post"""
+        if self.published_posts:
+            return self.published_posts[-1]
+        return None
 
 
 class MockLinkedInPublisher(SocialPublisher):
@@ -113,9 +130,26 @@ class MockLinkedInPublisher(SocialPublisher):
         import re
         return re.findall(r'#\w+', content)
     
-    def get_published_posts(self) -> list:
-        """Get all published posts (for testing)"""
+    def get_published_posts(self) -> List[Dict]:
+        """Get all published posts"""
         return self.published_posts
+    
+    def get_published_posts_count(self) -> int:
+        """Get count of published posts"""
+        return len(self.published_posts)
+    
+    def clear_history(self) -> int:
+        """Clear all published posts history"""
+        count = len(self.published_posts)
+        self.published_posts = []
+        logger.info(f"Cleared {count} posts from Mock LinkedIn history")
+        return count
+    
+    def get_last_post(self) -> Optional[Dict]:
+        """Get the most recent published post"""
+        if self.published_posts:
+            return self.published_posts[-1]
+        return None
 
 
 class MockDiscordPublisher(SocialPublisher):
@@ -161,6 +195,23 @@ class MockDiscordPublisher(SocialPublisher):
             }
         }
     
-    def get_published_posts(self) -> list:
-        """Get all published posts (for testing)"""
+    def get_published_posts(self) -> List[Dict]:
+        """Get all published posts"""
         return self.published_posts
+    
+    def get_published_posts_count(self) -> int:
+        """Get count of published posts"""
+        return len(self.published_posts)
+    
+    def clear_history(self) -> int:
+        """Clear all published posts history"""
+        count = len(self.published_posts)
+        self.published_posts = []
+        logger.info(f"Cleared {count} posts from Mock Discord history")
+        return count
+    
+    def get_last_post(self) -> Optional[Dict]:
+        """Get the most recent published post"""
+        if self.published_posts:
+            return self.published_posts[-1]
+        return None

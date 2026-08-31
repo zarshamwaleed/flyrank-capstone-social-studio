@@ -374,17 +374,14 @@ async def publish_variant(
 ):
     """Publish a variant using the specified publisher"""
     try:
-        # Get the variant
         variant = VariantService.get_variant(db, variant_id)
         
-        # Check if variant is approved
         if variant.status != "approved":
             raise HTTPException(
                 status_code=403,
                 detail=f"Cannot publish variant: status is {variant.status}, must be approved"
             )
         
-        # Get the publisher
         publisher = get_publisher(publisher_name)
         if not publisher:
             raise HTTPException(
@@ -392,23 +389,19 @@ async def publish_variant(
                 detail=f"Unknown publisher: {publisher_name}. Available: {PublisherFactory.get_publisher_names()}"
             )
         
-        # Validate publisher configuration
         if not publisher.validate_config():
             raise HTTPException(
                 status_code=400,
                 detail=f"Publisher {publisher_name} is not properly configured"
             )
         
-        # Prepare content
         content = variant.content
         if variant.hashtags:
             content = f"{content}\n\n{variant.hashtags}"
         
-        # Publish
         result = publisher.publish(content, variant.platform)
         
         if result["success"]:
-            # Update variant status to published
             variant.status = "published"
             variant.published_at = datetime.now()
             db.commit()
@@ -458,7 +451,6 @@ async def configure_publisher(
                     detail="webhook_url is required for Discord publisher"
                 )
             
-            # Get or create publisher instance
             publisher = get_publisher("discord")
             if not publisher:
                 raise HTTPException(
@@ -466,7 +458,6 @@ async def configure_publisher(
                     detail="Failed to get Discord publisher"
                 )
             
-            # Set webhook URL
             publisher.set_webhook_url(webhook_url)
             
             return {
@@ -501,16 +492,13 @@ async def preview_mock_publish(
                 detail=f"Unknown publisher: {publisher_name}"
             )
         
-        # Format content for preview
         content = variant.content
         if variant.hashtags:
             content = f"{content}\n\n{variant.hashtags}"
         
         formatted_content = publisher.format_content(content)
         
-        # For mock publishers, we can show what would be published
         if hasattr(publisher, 'published_posts'):
-            # Simulate a preview
             preview = {
                 "variant_id": variant_id,
                 "publisher": publisher_name,
@@ -539,3 +527,100 @@ async def preview_mock_publish(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Preview error: {str(e)}")
+
+# ===== Module 8: Mock Publishers Testing =====
+
+# IMPORTANT: /all/history MUST come BEFORE {publisher_name}/history for proper route matching
+
+@app.get("/mock/publishers/all/history")
+async def get_all_mock_publishers_history():
+    """Get the history of published posts for all mock publishers"""
+    publishers = ["mock_x", "mock_linkedin", "mock_discord"]
+    all_history = {}
+    total_posts = 0
+    
+    for publisher_name in publishers:
+        history = PublisherFactory.get_mock_publisher_history(publisher_name)
+        if history is not None:
+            all_history[publisher_name] = {
+                "total_posts": len(history),
+                "history": history
+            }
+            total_posts += len(history)
+        else:
+            all_history[publisher_name] = {
+                "total_posts": 0,
+                "history": []
+            }
+    
+    return {
+        "status": "success",
+        "total_posts": total_posts,
+        "publishers": all_history
+    }
+
+@app.get("/mock/publishers/{publisher_name}/history")
+async def get_mock_publisher_history(publisher_name: str):
+    """Get the history of published posts for a mock publisher"""
+    if publisher_name not in ["mock_x", "mock_linkedin", "mock_discord"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid publisher. Must be one of: mock_x, mock_linkedin, mock_discord"
+        )
+    
+    history = PublisherFactory.get_mock_publisher_history(publisher_name)
+    if history is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Publisher {publisher_name} not found or has no history"
+        )
+    
+    return {
+        "status": "success",
+        "publisher": publisher_name,
+        "total_posts": len(history),
+        "history": history
+    }
+
+@app.delete("/mock/publishers/{publisher_name}/history")
+async def clear_mock_publisher_history(publisher_name: str):
+    """Clear the history of published posts for a mock publisher"""
+    if publisher_name not in ["mock_x", "mock_linkedin", "mock_discord"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid publisher. Must be one of: mock_x, mock_linkedin, mock_discord"
+        )
+    
+    count = PublisherFactory.clear_mock_publisher_history(publisher_name)
+    if count is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Publisher {publisher_name} not found"
+        )
+    
+    return {
+        "status": "success",
+        "message": f"Cleared {count} posts from {publisher_name} history",
+        "cleared_count": count
+    }
+
+@app.get("/mock/publishers/{publisher_name}/stats")
+async def get_mock_publisher_stats(publisher_name: str):
+    """Get statistics for a mock publisher"""
+    if publisher_name not in ["mock_x", "mock_linkedin", "mock_discord"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid publisher. Must be one of: mock_x, mock_linkedin, mock_discord"
+        )
+    
+    stats = PublisherFactory.get_mock_publisher_stats(publisher_name)
+    if stats is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Publisher {publisher_name} not found"
+        )
+    
+    return {
+        "status": "success",
+        "stats": stats
+    }

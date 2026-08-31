@@ -1,4 +1,4 @@
-﻿from typing import Dict, Type, Optional
+﻿from typing import Dict, Type, Optional, List
 from app.publishers import SocialPublisher
 from app.mock_publishers import MockXPublisher, MockLinkedInPublisher, MockDiscordPublisher
 from app.discord_publisher import DiscordPublisher
@@ -22,7 +22,7 @@ class PublisherFactory:
     def register_publisher(cls, name: str, publisher_class: Type[SocialPublisher]):
         """Register a new publisher type"""
         cls._publishers[name] = publisher_class
-        cls._instances.pop(name, None)  # Clear cached instance
+        cls._instances.pop(name, None)
         logger.info(f"Registered publisher: {name}")
     
     @classmethod
@@ -32,11 +32,9 @@ class PublisherFactory:
             logger.error(f"Unknown publisher: {name}")
             return None
         
-        # Return cached instance if available
         if name in cls._instances:
             return cls._instances[name]
         
-        # Create new instance
         try:
             publisher = cls._publishers[name]()
             cls._instances[name] = publisher
@@ -68,8 +66,50 @@ class PublisherFactory:
         """Clear all cached instances (useful for testing)"""
         cls._instances.clear()
         logger.info("Cleared all publisher instances")
+    
+    @classmethod
+    def get_mock_publisher_history(cls, publisher_name: str) -> Optional[List[Dict]]:
+        """Get history for a mock publisher"""
+        publisher = cls.get_publisher(publisher_name)
+        if not publisher:
+            return None
+        
+        if hasattr(publisher, 'get_published_posts'):
+            return publisher.get_published_posts()
+        return None
+    
+    @classmethod
+    def clear_mock_publisher_history(cls, publisher_name: str) -> Optional[int]:
+        """Clear history for a mock publisher"""
+        publisher = cls.get_publisher(publisher_name)
+        if not publisher:
+            return None
+        
+        if hasattr(publisher, 'clear_history'):
+            return publisher.clear_history()
+        return None
+    
+    @classmethod
+    def get_mock_publisher_stats(cls, publisher_name: str) -> Optional[Dict]:
+        """Get statistics for a mock publisher"""
+        publisher = cls.get_publisher(publisher_name)
+        if not publisher:
+            return None
+        
+        stats = {
+            "publisher": publisher_name,
+            "configured": publisher.validate_config()
+        }
+        
+        if hasattr(publisher, 'get_published_posts_count'):
+            stats["total_posts"] = publisher.get_published_posts_count()
+        
+        if hasattr(publisher, 'get_last_post'):
+            last = publisher.get_last_post()
+            stats["last_post"] = last
+        
+        return stats
 
-# Create a convenience function for getting publishers
 def get_publisher(name: str) -> Optional[SocialPublisher]:
     """Convenience function to get a publisher"""
     return PublisherFactory.get_publisher(name)
