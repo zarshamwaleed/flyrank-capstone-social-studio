@@ -4,12 +4,15 @@ from app.database import get_db, engine
 from app import models
 from app.schemas import (
     PostCreate, PostResponse, PostIngestResponse,
-    VariantCreate, VariantResponse, VariantGenerateResponse,
-    ConstraintInfo, ValidationRequest, ValidationResponse
+    VariantResponse, VariantGenerateResponse,
+    ValidationRequest, ValidationResponse
 )
 from app.service import PostService, VariantService
 from app.generators import PlatformGenerator
 from app.validators import ConstraintValidator
+from app.publisher_factory import PublisherFactory, get_publisher
+from app.discord_publisher import DiscordPublisher
+from app.mock_publishers import MockXPublisher, MockLinkedInPublisher, MockDiscordPublisher
 import os
 from typing import List, Optional
 from datetime import datetime
@@ -261,7 +264,6 @@ async def get_constraints_summary():
 
 @app.post("/variants/{variant_id}/approve")
 async def approve_variant(variant_id: int, db: Session = Depends(get_db)):
-    """Approve a variant. It must pass validation to be approved."""
     try:
         variant = VariantService.approve_variant(db, variant_id)
         return {
@@ -280,7 +282,6 @@ async def reject_variant(
     reason: Optional[str] = Query(None, description="Reason for rejection"),
     db: Session = Depends(get_db)
 ):
-    """Reject a variant with optional reason"""
     try:
         variant = VariantService.reject_variant(db, variant_id, reason)
         return {
@@ -301,7 +302,6 @@ async def edit_variant(
     hashtags: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Edit a variant's content and hashtags. Validation is enforced."""
     try:
         variant = VariantService.edit_variant(db, variant_id, content, hashtags)
         return {
@@ -316,7 +316,6 @@ async def edit_variant(
 
 @app.get("/variants/review/stats")
 async def get_review_stats(db: Session = Depends(get_db)):
-    """Get review workflow statistics"""
     stats = VariantService.get_review_stats(db)
     return {
         "status": "success",
@@ -329,11 +328,7 @@ async def schedule_variant(
     scheduled_time: str,
     db: Session = Depends(get_db)
 ):
-    """
-    Schedule a variant for publishing. Only approved variants can be scheduled.
-    """
     try:
-        # Parse datetime
         try:
             scheduled_dt = datetime.fromisoformat(scheduled_time.replace('Z', '+00:00'))
         except ValueError:
@@ -349,7 +344,6 @@ async def schedule_variant(
             "variant": VariantResponse.model_validate(variant)
         }
     except ValueError as e:
-        # Check if it's a scheduling permission error (4xx)
         if "must be approved" in str(e):
             raise HTTPException(status_code=403, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
@@ -360,7 +354,6 @@ async def schedule_variant(
 
 @app.get("/variants/{variant_id}/can-schedule")
 async def check_can_schedule(variant_id: int, db: Session = Depends(get_db)):
-    """Check if a variant can be scheduled"""
     try:
         can_schedule, message = VariantService.can_schedule_variant(db, variant_id)
         return {
@@ -370,3 +363,179 @@ async def check_can_schedule(variant_id: int, db: Session = Depends(get_db)):
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+# ===== Module 7: Publisher Adapter Architecture =====
+
+@app.post("/publish/{variant_id}")
+async def publish_variant(
+    variant_id: int,
+    publisher_name: str = Query("mock_x", description="Publisher to use (mock_x, mock_linkedin, mock_discord, discord)"),
+    db: Session = Depends(get_db)
+):
+    """Publish a variant using the specified publisher"""
+    try:
+        # Get the variant
+        variant = VariantService.get_variant(db, variant_id)
+        
+        # Check if variant is approved
+        if variant.status != "approved":
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot publish variant: status is {variant.status}, must be approved"
+            )
+        
+        # Get the publisher
+        publisher = get_publisher(publisher_name)
+        if not publisher:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown publisher: {publisher_name}. Available: {PublisherFactory.get_publisher_names()}"
+            )
+        
+        # Validate publisher configuration
+        if not publisher.validate_config():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Publisher {publisher_name} is not properly configured"
+            )
+        
+        # Prepare content
+        content = variant.content
+        if variant.hashtags:
+            content = f"{content}\n\n{variant.hashtags}"
+        
+        # Publish
+        result = publisher.publish(content, variant.platform)
+        
+        if result["success"]:
+            # Update variant status to published
+            variant.status = "published"
+            variant.published_at = datetime.now()
+            db.commit()
+            db.refresh(variant)
+        
+        return {
+            "status": "success" if result["success"] else "error",
+            "message": result["message"],
+            "publisher": publisher_name,
+            "variant_id": variant_id,
+            "platform": variant.platform,
+            "result": result
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Publish error: {str(e)}")
+
+@app.get("/publishers")
+async def list_publishers():
+    """List all available publishers and their status"""
+    available = PublisherFactory.get_available_publishers()
+    names = PublisherFactory.get_publisher_names()
+    
+    return {
+        "status": "success",
+        "publishers": names,
+        "statuses": available
+    }
+
+@app.post("/publishers/{publisher_name}/configure")
+async def configure_publisher(
+    publisher_name: str,
+    config: dict,
+    db: Session = Depends(get_db)
+):
+    """Configure a publisher (e.g., set webhook URL)"""
+    try:
+        if publisher_name == "discord":
+            webhook_url = config.get("webhook_url")
+            if not webhook_url:
+                raise HTTPException(
+                    status_code=400,
+                    detail="webhook_url is required for Discord publisher"
+                )
+            
+            # Get or create publisher instance
+            publisher = get_publisher("discord")
+            if not publisher:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Failed to get Discord publisher"
+                )
+            
+            # Set webhook URL
+            publisher.set_webhook_url(webhook_url)
+            
+            return {
+                "status": "success",
+                "message": f"Discord publisher configured",
+                "webhook_url": webhook_url[:20] + "..." if webhook_url else "Not set"
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Configuration not supported for {publisher_name} (mock publishers don't need configuration)"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Configuration error: {str(e)}")
+
+@app.post("/publish/mock/preview")
+async def preview_mock_publish(
+    variant_id: int = Query(..., description="Variant ID to preview"),
+    publisher_name: str = Query("mock_x", description="Mock publisher to preview"),
+    db: Session = Depends(get_db)
+):
+    """Preview a mock publish without actually publishing"""
+    try:
+        variant = VariantService.get_variant(db, variant_id)
+        
+        publisher = get_publisher(publisher_name)
+        if not publisher:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown publisher: {publisher_name}"
+            )
+        
+        # Format content for preview
+        content = variant.content
+        if variant.hashtags:
+            content = f"{content}\n\n{variant.hashtags}"
+        
+        formatted_content = publisher.format_content(content)
+        
+        # For mock publishers, we can show what would be published
+        if hasattr(publisher, 'published_posts'):
+            # Simulate a preview
+            preview = {
+                "variant_id": variant_id,
+                "publisher": publisher_name,
+                "platform": variant.platform,
+                "content": formatted_content,
+                "characters": len(formatted_content),
+                "hashtags": variant.hashtags or "None",
+                "would_be_published_at": datetime.now().isoformat(),
+                "status": variant.status
+            }
+            
+            return {
+                "status": "success",
+                "message": f"Preview for {publisher_name}",
+                "preview": preview
+            }
+        else:
+            return {
+                "status": "success",
+                "message": f"Preview for {publisher_name}",
+                "content": formatted_content,
+                "characters": len(formatted_content)
+            }
+            
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preview error: {str(e)}")
