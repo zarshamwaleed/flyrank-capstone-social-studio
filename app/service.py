@@ -24,12 +24,9 @@ class PostService:
     @staticmethod
     def extract_text_from_html(html_content):
         """Extract text from HTML content (basic extraction)"""
-        # Remove script and style tags
         html_content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL)
         html_content = re.sub(r'<style[^>]*>.*?</style>', '', html_content, flags=re.DOTALL)
-        # Remove HTML tags
         text = re.sub(r'<[^>]+>', ' ', html_content)
-        # Clean up whitespace
         text = re.sub(r'\s+', ' ', text).strip()
         return text
     
@@ -62,10 +59,8 @@ class PostService:
     @staticmethod
     def create_post(db: Session, post_data):
         """Create a new post in the database"""
-        # Determine source type
         source_type = "url" if post_data.source_url else "text"
         
-        # If URL is provided and no content, fetch from URL
         if post_data.source_url and not post_data.content:
             try:
                 fetched_data = PostService.fetch_post_from_url(str(post_data.source_url))
@@ -75,11 +70,9 @@ class PostService:
             except ValueError as e:
                 raise ValueError(f"Could not fetch from URL: {str(e)}")
         
-        # Validate that we have content
         if not post_data.content:
             raise ValueError("Post content is required")
         
-        # Create post
         db_post = Post(
             title=post_data.title,
             content=post_data.content,
@@ -94,18 +87,16 @@ class PostService:
 
 
 class VariantService:
-    """Service for handling variants with validation"""
+    """Service for handling variants with review workflow"""
     
     @staticmethod
     def generate_variants_for_post(db: Session, post_id: int, platforms: List[str] = None, validate: bool = True) -> Tuple[List[Variant], Dict]:
         """Generate variants for a post on specified platforms with optional validation"""
         
-        # Get the post
         post = db.query(Post).filter(Post.id == post_id).first()
         if not post:
             raise ValueError(f"Post with id {post_id} not found")
         
-        # Default platforms if none specified
         if not platforms:
             platforms = ["twitter", "linkedin", "discord"]
         
@@ -114,7 +105,6 @@ class VariantService:
         all_valid = True
         
         for platform in platforms:
-            # Check if variant already exists for this platform
             existing = db.query(Variant).filter(
                 Variant.post_id == post_id,
                 Variant.platform == platform
@@ -123,8 +113,6 @@ class VariantService:
             if existing:
                 logger.info(f"Variant for platform {platform} already exists for post {post_id}")
                 generated_variants.append(existing)
-                
-                # Validate existing variant
                 if validate:
                     result = ConstraintValidator.validate_variant(
                         platform, existing.content, existing.hashtags
@@ -134,14 +122,12 @@ class VariantService:
                         all_valid = False
                 continue
             
-            # Generate the variant
             variant_data = PlatformGenerator.generate_variant(platform, post.title or "Untitled", post.content)
             
             if not variant_data:
                 logger.warning(f"Could not generate variant for platform {platform}")
                 continue
             
-            # Validate the generated variant
             if validate:
                 result = ConstraintValidator.validate_variant(
                     platform, 
@@ -149,13 +135,10 @@ class VariantService:
                     variant_data.get("hashtags", "")
                 )
                 validation_results[platform] = result
-                
-                # If validation fails, still create but mark as invalid
                 if not result["valid"]:
                     all_valid = False
                     logger.warning(f"Variant for {platform} failed validation: {result['errors']}")
             
-            # Create variant in database
             db_variant = Variant(
                 post_id=post_id,
                 platform=platform,
@@ -203,7 +186,6 @@ class VariantService:
         """Update a variant's content with validation"""
         variant = VariantService.get_variant(db, variant_id)
         
-        # Validate the updated content
         result = ConstraintValidator.validate_variant(
             variant.platform, content, variant.hashtags
         )
@@ -233,3 +215,115 @@ class VariantService:
     def validate_variant_content(platform: str, content: str, hashtags: Optional[str] = None) -> Dict:
         """Validate variant content against platform constraints"""
         return ConstraintValidator.validate_variant(platform, content, hashtags)
+    
+    # ===== Module 6: Review Workflow Methods =====
+    
+    @staticmethod
+    def approve_variant(db: Session, variant_id: int) -> Variant:
+        """Approve a variant"""
+        variant = VariantService.get_variant(db, variant_id)
+        
+        # Validate content before approving
+        result = ConstraintValidator.validate_variant(
+            variant.platform, variant.content, variant.hashtags
+        )
+        
+        if not result["valid"]:
+            raise ValueError(f"Cannot approve variant: {', '.join(result['errors'])}")
+        
+        variant.status = "approved"
+        db.commit()
+        db.refresh(variant)
+        logger.info(f"Variant {variant_id} approved")
+        return variant
+    
+    @staticmethod
+    def reject_variant(db: Session, variant_id: int, reason: Optional[str] = None) -> Variant:
+        """Reject a variant with optional reason"""
+        variant = VariantService.get_variant(db, variant_id)
+        variant.status = "rejected"
+        db.commit()
+        db.refresh(variant)
+        logger.info(f"Variant {variant_id} rejected: {reason}")
+        return variant
+    
+    @staticmethod
+    def edit_variant(db: Session, variant_id: int, content: str, hashtags: Optional[str] = None) -> Variant:
+        """Edit a variant's content and hashtags"""
+        variant = VariantService.get_variant(db, variant_id)
+        
+        # Validate the edited content
+        result = ConstraintValidator.validate_variant(
+            variant.platform, content, hashtags or ""
+        )
+        
+        if not result["valid"]:
+            raise ValueError(f"Edit validation failed: {', '.join(result['errors'])}")
+        
+        variant.content = content
+        if hashtags is not None:
+            variant.hashtags = hashtags
+        # Reset to draft if it was rejected so it can be reviewed again
+        if variant.status == "rejected":
+            variant.status = "draft"
+        
+        db.commit()
+        db.refresh(variant)
+        logger.info(f"Variant {variant_id} edited")
+        return variant
+    
+    @staticmethod
+    def can_schedule_variant(db: Session, variant_id: int) -> Tuple[bool, str]:
+        """Check if a variant can be scheduled"""
+        variant = VariantService.get_variant(db, variant_id)
+        
+        if variant.status != "approved":
+            return False, f"Variant is {variant.status}, must be approved to schedule"
+        
+        return True, "Variant can be scheduled"
+    
+    @staticmethod
+    def get_review_stats(db: Session) -> Dict:
+        """Get review statistics"""
+        variants = db.query(Variant).all()
+        
+        stats = {
+            "total": len(variants),
+            "draft": 0,
+            "approved": 0,
+            "rejected": 0,
+            "published": 0,
+            "by_platform": {}
+        }
+        
+        for variant in variants:
+            stats[variant.status] = stats.get(variant.status, 0) + 1
+            
+            if variant.platform not in stats["by_platform"]:
+                stats["by_platform"][variant.platform] = {
+                    "total": 0,
+                    "draft": 0,
+                    "approved": 0,
+                    "rejected": 0,
+                    "published": 0
+                }
+            
+            stats["by_platform"][variant.platform]["total"] += 1
+            stats["by_platform"][variant.platform][variant.status] = stats["by_platform"][variant.platform].get(variant.status, 0) + 1
+        
+        return stats
+    
+    @staticmethod
+    def schedule_variant(db: Session, variant_id: int, scheduled_time: datetime) -> Variant:
+        """Schedule a variant for publishing"""
+        # Check if variant can be scheduled
+        can_schedule, message = VariantService.can_schedule_variant(db, variant_id)
+        if not can_schedule:
+            raise ValueError(message)
+        
+        variant = VariantService.get_variant(db, variant_id)
+        variant.scheduled_for = scheduled_time
+        db.commit()
+        db.refresh(variant)
+        logger.info(f"Variant {variant_id} scheduled for {scheduled_time}")
+        return variant

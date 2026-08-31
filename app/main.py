@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, Depends, HTTPException
+﻿from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db, engine
 from app import models
@@ -12,6 +12,7 @@ from app.generators import PlatformGenerator
 from app.validators import ConstraintValidator
 import os
 from typing import List, Optional
+from datetime import datetime
 
 print("Starting Social Media Studio API...")
 print("Creating tables if they don't exist...")
@@ -122,15 +123,7 @@ async def generate_variants(
     validate: bool = True,
     db: Session = Depends(get_db)
 ):
-    """
-    Generate variants for a post on specified platforms.
-    
-    - If platforms is not provided, generates for all platforms
-    - Platforms: twitter, linkedin, discord
-    - validate: If True, validates variants against platform constraints
-    """
     try:
-        # Validate platforms
         if platforms:
             valid_platforms = ["twitter", "linkedin", "discord"]
             for p in platforms:
@@ -140,7 +133,6 @@ async def generate_variants(
                         detail=f"Invalid platform: {p}. Must be one of {valid_platforms}"
                     )
         
-        # Generate variants with validation
         variants, validation_results = VariantService.generate_variants_for_post(
             db, post_id, platforms, validate
         )
@@ -161,65 +153,19 @@ async def generate_variants(
 
 @app.get("/posts/{post_id}/variants", response_model=List[VariantResponse])
 async def get_variants(post_id: int, db: Session = Depends(get_db)):
-    """Get all variants for a post"""
     variants = VariantService.get_variants_for_post(db, post_id)
     return [VariantResponse.model_validate(v) for v in variants]
 
 @app.get("/variants/{variant_id}", response_model=VariantResponse)
 async def get_variant(variant_id: int, db: Session = Depends(get_db)):
-    """Get a specific variant by ID"""
     try:
         variant = VariantService.get_variant(db, variant_id)
         return VariantResponse.model_validate(variant)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-@app.patch("/variants/{variant_id}/status")
-async def update_variant_status(
-    variant_id: int, 
-    status: str,
-    db: Session = Depends(get_db)
-):
-    """Update a variant's status (draft, approved, rejected, published)"""
-    valid_statuses = ["draft", "approved", "rejected", "published"]
-    if status not in valid_statuses:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid status. Must be one of {valid_statuses}"
-        )
-    
-    try:
-        variant = VariantService.update_variant_status(db, variant_id, status)
-        return {
-            "status": "success",
-            "message": f"Variant {variant_id} status updated to {status}",
-            "variant": VariantResponse.model_validate(variant)
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-@app.patch("/variants/{variant_id}/content")
-async def update_variant_content(
-    variant_id: int,
-    content: str,
-    db: Session = Depends(get_db)
-):
-    """Update a variant's content with validation"""
-    try:
-        variant = VariantService.update_variant_content(db, variant_id, content)
-        return {
-            "status": "success",
-            "message": f"Variant {variant_id} content updated",
-            "variant": VariantResponse.model_validate(variant)
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.delete("/variants/{variant_id}")
 async def delete_variant(variant_id: int, db: Session = Depends(get_db)):
-    """Delete a variant"""
     try:
         VariantService.delete_variant(db, variant_id)
         return {"status": "success", "message": f"Variant {variant_id} deleted successfully"}
@@ -228,7 +174,6 @@ async def delete_variant(variant_id: int, db: Session = Depends(get_db)):
 
 @app.get("/platforms/constraints")
 async def get_platform_constraints():
-    """Get constraints for all platforms"""
     constraints = PlatformGenerator.CONSTRAINTS
     return {
         "status": "success",
@@ -239,13 +184,6 @@ async def get_platform_constraints():
 
 @app.post("/validate", response_model=ValidationResponse)
 async def validate_content(request: ValidationRequest):
-    """
-    Validate content against platform constraints
-    
-    - platform: twitter, linkedin, discord
-    - content: The content to validate
-    - hashtags: Optional hashtags to validate
-    """
     result = ConstraintValidator.validate_variant(
         request.platform, request.content, request.hashtags
     )
@@ -260,7 +198,6 @@ async def validate_content(request: ValidationRequest):
 
 @app.get("/validate/variant/{variant_id}")
 async def validate_existing_variant(variant_id: int, db: Session = Depends(get_db)):
-    """Validate an existing variant against platform constraints"""
     try:
         variant = VariantService.get_variant(db, variant_id)
         result = ConstraintValidator.validate_variant(
@@ -281,7 +218,6 @@ async def validate_existing_variant(variant_id: int, db: Session = Depends(get_d
 
 @app.get("/validate/post/{post_id}")
 async def validate_post_variants(post_id: int, db: Session = Depends(get_db)):
-    """Validate all variants for a post"""
     try:
         variants = VariantService.get_variants_for_post(db, post_id)
         if not variants:
@@ -315,9 +251,122 @@ async def validate_post_variants(post_id: int, db: Session = Depends(get_db)):
 
 @app.get("/constraints/summary")
 async def get_constraints_summary():
-    """Get a summary of all platform constraints"""
     summary = ConstraintValidator.get_constraints_summary()
     return {
         "status": "success",
         "constraints": summary
     }
+
+# ===== Module 6: Review Workflow =====
+
+@app.post("/variants/{variant_id}/approve")
+async def approve_variant(variant_id: int, db: Session = Depends(get_db)):
+    """Approve a variant. It must pass validation to be approved."""
+    try:
+        variant = VariantService.approve_variant(db, variant_id)
+        return {
+            "status": "success",
+            "message": f"Variant {variant_id} approved",
+            "variant": VariantResponse.model_validate(variant)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/variants/{variant_id}/reject")
+async def reject_variant(
+    variant_id: int, 
+    reason: Optional[str] = Query(None, description="Reason for rejection"),
+    db: Session = Depends(get_db)
+):
+    """Reject a variant with optional reason"""
+    try:
+        variant = VariantService.reject_variant(db, variant_id, reason)
+        return {
+            "status": "success",
+            "message": f"Variant {variant_id} rejected",
+            "reason": reason,
+            "variant": VariantResponse.model_validate(variant)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/variants/{variant_id}/edit")
+async def edit_variant(
+    variant_id: int,
+    content: str,
+    hashtags: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Edit a variant's content and hashtags. Validation is enforced."""
+    try:
+        variant = VariantService.edit_variant(db, variant_id, content, hashtags)
+        return {
+            "status": "success",
+            "message": f"Variant {variant_id} edited",
+            "variant": VariantResponse.model_validate(variant)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/variants/review/stats")
+async def get_review_stats(db: Session = Depends(get_db)):
+    """Get review workflow statistics"""
+    stats = VariantService.get_review_stats(db)
+    return {
+        "status": "success",
+        "stats": stats
+    }
+
+@app.post("/variants/{variant_id}/schedule")
+async def schedule_variant(
+    variant_id: int,
+    scheduled_time: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Schedule a variant for publishing. Only approved variants can be scheduled.
+    """
+    try:
+        # Parse datetime
+        try:
+            scheduled_dt = datetime.fromisoformat(scheduled_time.replace('Z', '+00:00'))
+        except ValueError:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid datetime format. Use ISO format (e.g., 2024-12-31T15:00:00)"
+            )
+        
+        variant = VariantService.schedule_variant(db, variant_id, scheduled_dt)
+        return {
+            "status": "success",
+            "message": f"Variant {variant_id} scheduled for {scheduled_time}",
+            "variant": VariantResponse.model_validate(variant)
+        }
+    except ValueError as e:
+        # Check if it's a scheduling permission error (4xx)
+        if "must be approved" in str(e):
+            raise HTTPException(status_code=403, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/variants/{variant_id}/can-schedule")
+async def check_can_schedule(variant_id: int, db: Session = Depends(get_db)):
+    """Check if a variant can be scheduled"""
+    try:
+        can_schedule, message = VariantService.can_schedule_variant(db, variant_id)
+        return {
+            "variant_id": variant_id,
+            "can_schedule": can_schedule,
+            "message": message
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
