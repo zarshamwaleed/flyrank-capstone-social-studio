@@ -1,5 +1,5 @@
-﻿from pydantic import BaseModel, Field
-from typing import Optional, List
+﻿from pydantic import BaseModel, Field, HttpUrl
+from typing import Optional, List, Dict
 from datetime import datetime
 from enum import Enum
 
@@ -84,6 +84,7 @@ class VariantGenerateResponse(BaseModel):
     message: str
     variants: List[VariantResponse]
     platforms_generated: List[str]
+    validation_results: Optional[Dict]
     
     class Config:
         from_attributes = True
@@ -94,3 +95,16 @@ class ConstraintInfo(BaseModel):
     max_hashtags: int
     tone: str
     description: str
+
+# Validation schemas
+class ValidationRequest(BaseModel):
+    platform: str
+    content: str
+    hashtags: Optional[str] = None
+
+class ValidationResponse(BaseModel):
+    valid: bool
+    errors: List[str]
+    warnings: List[str]
+    details: Dict
+    constraints: Dict

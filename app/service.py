@@ -1,7 +1,8 @@
 ﻿from sqlalchemy.orm import Session
 from app.models import Post, Variant
 from app.generators import PlatformGenerator
-from typing import List, Dict, Optional
+from app.validators import ConstraintValidator
+from typing import List, Dict, Optional, Tuple
 import requests
 import re
 from datetime import datetime
@@ -93,11 +94,11 @@ class PostService:
 
 
 class VariantService:
-    """Service for handling variants"""
+    """Service for handling variants with validation"""
     
     @staticmethod
-    def generate_variants_for_post(db: Session, post_id: int, platforms: List[str] = None) -> List[Variant]:
-        """Generate variants for a post on specified platforms"""
+    def generate_variants_for_post(db: Session, post_id: int, platforms: List[str] = None, validate: bool = True) -> Tuple[List[Variant], Dict]:
+        """Generate variants for a post on specified platforms with optional validation"""
         
         # Get the post
         post = db.query(Post).filter(Post.id == post_id).first()
@@ -109,6 +110,8 @@ class VariantService:
             platforms = ["twitter", "linkedin", "discord"]
         
         generated_variants = []
+        validation_results = {}
+        all_valid = True
         
         for platform in platforms:
             # Check if variant already exists for this platform
@@ -120,6 +123,15 @@ class VariantService:
             if existing:
                 logger.info(f"Variant for platform {platform} already exists for post {post_id}")
                 generated_variants.append(existing)
+                
+                # Validate existing variant
+                if validate:
+                    result = ConstraintValidator.validate_variant(
+                        platform, existing.content, existing.hashtags
+                    )
+                    validation_results[platform] = result
+                    if not result["valid"]:
+                        all_valid = False
                 continue
             
             # Generate the variant
@@ -128,6 +140,20 @@ class VariantService:
             if not variant_data:
                 logger.warning(f"Could not generate variant for platform {platform}")
                 continue
+            
+            # Validate the generated variant
+            if validate:
+                result = ConstraintValidator.validate_variant(
+                    platform, 
+                    variant_data.get("content", ""), 
+                    variant_data.get("hashtags", "")
+                )
+                validation_results[platform] = result
+                
+                # If validation fails, still create but mark as invalid
+                if not result["valid"]:
+                    all_valid = False
+                    logger.warning(f"Variant for {platform} failed validation: {result['errors']}")
             
             # Create variant in database
             db_variant = Variant(
@@ -145,7 +171,10 @@ class VariantService:
             generated_variants.append(db_variant)
             logger.info(f"Generated variant for platform {platform} on post {post_id}")
         
-        return generated_variants
+        return generated_variants, {
+            "all_valid": all_valid,
+            "results": validation_results
+        }
     
     @staticmethod
     def get_variants_for_post(db: Session, post_id: int) -> List[Variant]:
@@ -171,8 +200,17 @@ class VariantService:
     
     @staticmethod
     def update_variant_content(db: Session, variant_id: int, content: str) -> Variant:
-        """Update a variant's content"""
+        """Update a variant's content with validation"""
         variant = VariantService.get_variant(db, variant_id)
+        
+        # Validate the updated content
+        result = ConstraintValidator.validate_variant(
+            variant.platform, content, variant.hashtags
+        )
+        
+        if not result["valid"]:
+            raise ValueError(f"Content validation failed: {', '.join(result['errors'])}")
+        
         variant.content = content
         db.commit()
         db.refresh(variant)
@@ -190,3 +228,8 @@ class VariantService:
     def get_platform_constraints() -> Dict:
         """Get platform constraints"""
         return PlatformGenerator.CONSTRAINTS
+    
+    @staticmethod
+    def validate_variant_content(platform: str, content: str, hashtags: Optional[str] = None) -> Dict:
+        """Validate variant content against platform constraints"""
+        return ConstraintValidator.validate_variant(platform, content, hashtags)
