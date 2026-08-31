@@ -87,7 +87,7 @@ class PostService:
 
 
 class VariantService:
-    """Service for handling variants with review workflow"""
+    """Service for handling variants with review workflow and scheduling"""
     
     @staticmethod
     def generate_variants_for_post(db: Session, post_id: int, platforms: List[str] = None, validate: bool = True) -> Tuple[List[Variant], Dict]:
@@ -223,7 +223,6 @@ class VariantService:
         """Approve a variant"""
         variant = VariantService.get_variant(db, variant_id)
         
-        # Validate content before approving
         result = ConstraintValidator.validate_variant(
             variant.platform, variant.content, variant.hashtags
         )
@@ -252,7 +251,6 @@ class VariantService:
         """Edit a variant's content and hashtags"""
         variant = VariantService.get_variant(db, variant_id)
         
-        # Validate the edited content
         result = ConstraintValidator.validate_variant(
             variant.platform, content, hashtags or ""
         )
@@ -263,7 +261,6 @@ class VariantService:
         variant.content = content
         if hashtags is not None:
             variant.hashtags = hashtags
-        # Reset to draft if it was rejected so it can be reviewed again
         if variant.status == "rejected":
             variant.status = "draft"
         
@@ -313,6 +310,8 @@ class VariantService:
         
         return stats
     
+    # ===== Module 10: Scheduling Methods =====
+    
     @staticmethod
     def schedule_variant(db: Session, variant_id: int, scheduled_time: datetime) -> Variant:
         """Schedule a variant for publishing"""
@@ -326,4 +325,29 @@ class VariantService:
         db.commit()
         db.refresh(variant)
         logger.info(f"Variant {variant_id} scheduled for {scheduled_time}")
+        return variant
+    
+    @staticmethod
+    def get_scheduled_variants(db: Session) -> List[Variant]:
+        """Get all scheduled variants"""
+        return db.query(Variant).filter(Variant.scheduled_for.isnot(None)).all()
+    
+    @staticmethod
+    def get_due_variants(db: Session) -> List[Variant]:
+        """Get all variants that are due for publishing"""
+        now = datetime.now()
+        return db.query(Variant).filter(
+            Variant.scheduled_for <= now,
+            Variant.status == "approved"
+        ).all()
+    
+    @staticmethod
+    def mark_as_published(db: Session, variant_id: int) -> Variant:
+        """Mark a variant as published"""
+        variant = VariantService.get_variant(db, variant_id)
+        variant.status = "published"
+        variant.published_at = datetime.now()
+        db.commit()
+        db.refresh(variant)
+        logger.info(f"Variant {variant_id} marked as published")
         return variant

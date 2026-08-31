@@ -528,6 +528,357 @@ async def preview_mock_publish(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Preview error: {str(e)}")
 
+    # ===== Module 9: Real Discord Publisher =====
+
+@app.post("/discord/test")
+async def test_discord_connection():
+    """Test the Discord webhook connection"""
+    publisher = get_publisher("discord")
+    if not publisher:
+        raise HTTPException(
+            status_code=400,
+            detail="Discord publisher not available"
+        )
+    
+    result = publisher.test_connection()
+    if result["success"]:
+        return {
+            "status": "success",
+            "message": result["message"]
+        }
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=result["message"]
+        )
+
+@app.get("/discord/status")
+async def get_discord_status():
+    """Get the status of the Discord publisher"""
+    publisher = get_publisher("discord")
+    if not publisher:
+        return {
+            "status": "error",
+            "configured": False,
+            "message": "Discord publisher not available"
+        }
+    
+    return {
+        "status": "success",
+        "configured": publisher.validate_config(),
+        "platform": publisher.get_platform_name()
+    }
+# ===== Module 10: Scheduling =====
+
+@app.get("/scheduler/status")
+async def get_scheduler_status():
+    """Get the status of the scheduler"""
+    from app.scheduler import get_scheduler_status
+    return {
+        "status": "success",
+        "scheduler": get_scheduler_status()
+    }
+
+@app.get("/scheduler/jobs")
+async def list_scheduled_jobs():
+    """List all scheduled jobs"""
+    from app.scheduler import scheduler
+    jobs = []
+    for job in scheduler.get_jobs():
+        jobs.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
+            "trigger": str(job.trigger)
+        })
+    return {
+        "status": "success",
+        "jobs": jobs,
+        "total": len(jobs)
+    }
+
+@app.post("/scheduler/schedule/{variant_id}")
+async def schedule_publish(
+    variant_id: int,
+    publisher: str = Query("discord", description="Publisher to use for publishing"),
+    db: Session = Depends(get_db)
+):
+    """
+    Schedule a variant for publishing at its scheduled_for time.
+    The variant must be approved and have a scheduled_for time set.
+    """
+    try:
+        from app.scheduler import scheduler
+        from app.publish_job import publish_scheduled_variant
+        from datetime import datetime
+        
+        # Get the variant
+        variant = VariantService.get_variant(db, variant_id)
+        
+        # Check if variant is approved
+        if variant.status != "approved":
+            raise HTTPException(
+                status_code=403,
+                detail=f"Variant {variant_id} is {variant.status}, must be approved to schedule"
+            )
+        
+        # Check if variant has a scheduled time
+        if not variant.scheduled_for:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Variant {variant_id} has no scheduled time. Set scheduled_for first."
+            )
+        
+        # Check if scheduled time is in the future
+        now = datetime.now()
+        if variant.scheduled_for <= now:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Scheduled time {variant.scheduled_for} is in the past"
+            )
+        
+        # Create a unique job ID
+        job_id = f"publish_variant_{variant_id}_{int(variant.scheduled_for.timestamp())}"
+        
+        # Schedule the job
+        scheduler.add_job(
+            id=job_id,
+            func=publish_scheduled_variant,
+            args=[variant_id, publisher],
+            trigger='date',
+            run_date=variant.scheduled_for,
+            name=f"Publish variant {variant_id} to {publisher}"
+        )
+        
+        return {
+            "status": "success",
+            "message": f"Variant {variant_id} scheduled for {variant.scheduled_for}",
+            "job_id": job_id,
+            "variant_id": variant_id,
+            "scheduled_for": variant.scheduled_for.isoformat(),
+            "publisher": publisher
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scheduling error: {str(e)}")
+
+@app.delete("/scheduler/jobs/{job_id}")
+async def cancel_scheduled_job(job_id: str):
+    """Cancel a scheduled job"""
+    from app.scheduler import scheduler
+    
+    job = scheduler.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    scheduler.remove_job(job_id)
+    return {
+        "status": "success",
+        "message": f"Job {job_id} cancelled"
+    }
+
+@app.get("/scheduler/due")
+async def get_due_variants(db: Session = Depends(get_db)):
+    """Get all variants that are due for publishing"""
+    due_variants = VariantService.get_due_variants(db)
+    return {
+        "status": "success",
+        "due_count": len(due_variants),
+        "variants": [VariantResponse.model_validate(v) for v in due_variants]
+    }
+
+@app.get("/scheduler/scheduled")
+async def get_scheduled_variants(db: Session = Depends(get_db)):
+    """Get all scheduled variants"""
+    scheduled = VariantService.get_scheduled_variants(db)
+    return {
+        "status": "success",
+        "scheduled_count": len(scheduled),
+        "variants": [VariantResponse.model_validate(v) for v in scheduled]
+    }
+
+@app.post("/scheduler/start")
+async def start_scheduler():
+    """Start the scheduler"""
+    from app.scheduler import start_scheduler
+    start_scheduler()
+    return {
+        "status": "success",
+        "message": "Scheduler started"
+    }
+
+@app.post("/scheduler/stop")
+async def stop_scheduler():
+    """Stop the scheduler"""
+    from app.scheduler import stop_scheduler
+    stop_scheduler()
+    return {
+        "status": "success",
+        "message": "Scheduler stopped"
+    }
+
+
+# ===== Module 10: Scheduling =====
+
+from app.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
+from app.publish_job import publish_scheduled_variant
+
+# Start scheduler on startup
+start_scheduler()
+
+@app.get("/scheduler/status")
+async def get_scheduler_status_endpoint():
+    """Get the status of the scheduler"""
+    from app.scheduler import get_scheduler_status
+    return {
+        "status": "success",
+        "scheduler": get_scheduler_status()
+    }
+
+@app.get("/scheduler/jobs")
+async def list_scheduled_jobs():
+    """List all scheduled jobs"""
+    from app.scheduler import scheduler
+    jobs = []
+    for job in scheduler.get_jobs():
+        jobs.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
+            "trigger": str(job.trigger)
+        })
+    return {
+        "status": "success",
+        "jobs": jobs,
+        "total": len(jobs)
+    }
+
+@app.post("/scheduler/schedule/{variant_id}")
+async def schedule_publish(
+    variant_id: int,
+    publisher: str = Query("discord", description="Publisher to use for publishing"),
+    db: Session = Depends(get_db)
+):
+    """
+    Schedule a variant for publishing at its scheduled_for time.
+    The variant must be approved and have a scheduled_for time set.
+    """
+    try:
+        from app.scheduler import scheduler
+        
+        # Get the variant
+        variant = VariantService.get_variant(db, variant_id)
+        
+        # Check if variant is approved
+        if variant.status != "approved":
+            raise HTTPException(
+                status_code=403,
+                detail=f"Variant {variant_id} is {variant.status}, must be approved to schedule"
+            )
+        
+        # Check if variant has a scheduled time
+        if not variant.scheduled_for:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Variant {variant_id} has no scheduled time. Set scheduled_for first."
+            )
+        
+        # Check if scheduled time is in the future
+        now = datetime.now()
+        if variant.scheduled_for <= now:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Scheduled time {variant.scheduled_for} is in the past"
+            )
+        
+        # Create a unique job ID
+        job_id = f"publish_variant_{variant_id}_{int(variant.scheduled_for.timestamp())}"
+        
+        # Schedule the job
+        scheduler.add_job(
+            id=job_id,
+            func=publish_scheduled_variant,
+            args=[variant_id, publisher],
+            trigger='date',
+            run_date=variant.scheduled_for,
+            name=f"Publish variant {variant_id} to {publisher}"
+        )
+        
+        return {
+            "status": "success",
+            "message": f"Variant {variant_id} scheduled for {variant.scheduled_for}",
+            "job_id": job_id,
+            "variant_id": variant_id,
+            "scheduled_for": variant.scheduled_for.isoformat(),
+            "publisher": publisher
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scheduling error: {str(e)}")
+
+@app.delete("/scheduler/jobs/{job_id}")
+async def cancel_scheduled_job(job_id: str):
+    """Cancel a scheduled job"""
+    from app.scheduler import scheduler
+    
+    job = scheduler.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    scheduler.remove_job(job_id)
+    return {
+        "status": "success",
+        "message": f"Job {job_id} cancelled"
+    }
+
+@app.get("/scheduler/due")
+async def get_due_variants(db: Session = Depends(get_db)):
+    """Get all variants that are due for publishing"""
+    due_variants = VariantService.get_due_variants(db)
+    return {
+        "status": "success",
+        "due_count": len(due_variants),
+        "variants": [VariantResponse.model_validate(v) for v in due_variants]
+    }
+
+@app.get("/scheduler/scheduled")
+async def get_scheduled_variants(db: Session = Depends(get_db)):
+    """Get all scheduled variants"""
+    scheduled = VariantService.get_scheduled_variants(db)
+    return {
+        "status": "success",
+        "scheduled_count": len(scheduled),
+        "variants": [VariantResponse.model_validate(v) for v in scheduled]
+    }
+
+@app.post("/scheduler/start")
+async def start_scheduler_endpoint():
+    """Start the scheduler"""
+    from app.scheduler import start_scheduler
+    start_scheduler()
+    return {
+        "status": "success",
+        "message": "Scheduler started"
+    }
+
+@app.post("/scheduler/stop")
+async def stop_scheduler_endpoint():
+    """Stop the scheduler"""
+    from app.scheduler import stop_scheduler
+    stop_scheduler()
+    return {
+        "status": "success",
+        "message": "Scheduler stopped"
+    }
+
 # ===== Module 8: Mock Publishers Testing =====
 
 # IMPORTANT: /all/history MUST come BEFORE {publisher_name}/history for proper route matching
